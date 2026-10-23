@@ -1,0 +1,163 @@
+# InteTeam production deploy of Mailu with native TOTP 2FA (this fork).
+# Deployed by panel.inte.team: git clone -> .env from the panel -> compose build + up.
+#
+# - Web (admin/webmail) is served over plain HTTP on the WireGuard IP; NPM on the
+#   same host terminates HTTPS and forwards to it (panel forward_port 8180).
+# - Mail ports use NPM's Let's Encrypt cert for MAILU HOSTNAME (TLS_FLAVOR=mail,
+#   TLS_CERT_FILENAME / TLS_KEYPAIR_FILENAME in .env point into /certs), so NPM's
+#   renewals are picked up by front's certwatcher - no manual cert copying.
+# - Data lives in /mailu, outside the deploy path: the panel chowns the deploy
+#   path on every deploy, which would break dovecot/postfix ownership.
+# - Only admin is built from this fork; everything else is upstream 2024.06.
+
+x-mailu: &mailu
+  restart: always
+  env_file: .env
+  dns:
+    - 192.168.203.254
+  depends_on:
+    - resolver
+
+services:
+
+  # Build-only stages for the admin image (never started)
+  admin-base:
+    image: mailu-inteteam/base:local
+    build:
+      context: core/base
+    profiles: ["build-only"]
+
+  admin-assets:
+    image: mailu-inteteam/assets:local
+    build:
+      context: core/admin/assets
+    profiles: ["build-only"]
+
+  resolver:
+    image: ghcr.io/mailu/unbound:2024.06
+    restart: always
+    env_file: .env
+    networks:
+      default:
+        ipv4_address: 192.168.203.254
+
+  redis:
+    <<: *mailu
+    image: redis:7-alpine
+    env_file: []
+    volumes:
+      - /mailu/redis:/data
+
+  front:
+    <<: *mailu
+    image: ghcr.io/mailu/nginx:2024.06
+    ports:
+      - "10.10.0.12:8180:80"   # web for NPM (WireGuard IP only)
+      - "25:25"
+      - "465:465"
+      - "587:587"
+      - "110:110"
+      - "995:995"
+      - "143:143"
+      - "993:993"
+    networks:
+      - default
+      - webmail
+    volumes:
+      - /opt/npm/letsencrypt:/certs:ro
+      - /mailu/overrides/nginx:/overrides:ro
+
+  admin:
+    <<: *mailu
+    image: mailu-inteteam/admin:local
+    build:
+      context: core/admin
+      additional_contexts:
+        base: service:admin-base
+        assets: service:admin-assets
+    volumes:
+      - /mailu/data:/data
+      - /mailu/dkim:/dkim
+    depends_on:
+      - redis
+      - resolver
+
+  imap:
+    <<: *mailu
+    image: ghcr.io/mailu/dovecot:2024.06
+    volumes:
+      - /mailu/mail:/mail
+      - /mailu/overrides/dovecot:/overrides:ro
+    depends_on:
+      - front
+      - resolver
+
+  smtp:
+    <<: *mailu
+    image: ghcr.io/mailu/postfix:2024.06
+    volumes:
+      - /mailu/mailqueue:/queue
+      - /mailu/overrides/postfix:/overrides:ro
+    depends_on:
+      - front
+      - resolver
+
+  oletools:
+    image: ghcr.io/mailu/oletools:2024.06
+    hostname: oletools
+    restart: always
+    networks:
+      - oletools
+
+  antispam:
+    <<: *mailu
+    image: ghcr.io/mailu/rspamd:2024.06
+    hostname: antispam
+    networks:
+      - default
+      - oletools
+      - clamav
+    volumes:
+      - /mailu/filter:/var/lib/rspamd
+      - /mailu/overrides/rspamd:/overrides:ro
+    depends_on:
+      - front
+      - redis
+      - oletools
+      - antivirus
+      - resolver
+
+  antivirus:
+    image: clamav/clamav-debian:1.4_base
+    restart: always
+    networks:
+      - clamav
+    volumes:
+      - /mailu/clamav:/var/lib/clamav
+
+  webmail:
+    image: ghcr.io/mailu/webmail:2024.06
+    restart: always
+    env_file: .env
+    volumes:
+      - /mailu/webmail:/data
+      - /mailu/overrides/roundcube:/overrides:ro
+    networks:
+      - webmail
+    depends_on:
+      - front
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 192.168.203.0/24
+  webmail:
+    driver: bridge
+  clamav:
+    driver: bridge
+  oletools:
+    driver: bridge
+    internal: true
