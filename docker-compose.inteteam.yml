@@ -1,5 +1,5 @@
-# InteTeam production deploy of Mailu with native TOTP 2FA (this fork).
-# Deployed by panel.inte.team: git clone -> .env from the panel -> compose build + up.
+# InteTeam production deploy of Mailu (stock upstream images).
+# Deployed by panel.inte.team: git clone -> .env from the panel -> compose pull + up.
 #
 # - Web (admin/webmail) is served over plain HTTP on the WireGuard IP; NPM on the
 #   same host terminates HTTPS and forwards to it (panel forward_port 8180).
@@ -8,7 +8,7 @@
 #   renewals are picked up by front's certwatcher - no manual cert copying.
 # - Data lives in /mailu, outside the deploy path: the panel chowns the deploy
 #   path on every deploy, which would break dovecot/postfix ownership.
-# - Only admin is built from this fork; everything else is upstream 2024.06.
+# - All Mailu images are pinned to ONE upstream release; bump them together.
 
 x-mailu: &mailu
   restart: always
@@ -20,21 +20,8 @@ x-mailu: &mailu
 
 services:
 
-  # Build-only stages for the admin image (never started)
-  admin-base:
-    image: mailu-inteteam/base:local
-    build:
-      context: core/base
-    profiles: ["build-only"]
-
-  admin-assets:
-    image: mailu-inteteam/assets:local
-    build:
-      context: core/admin/assets
-    profiles: ["build-only"]
-
   resolver:
-    image: ghcr.io/mailu/unbound:2024.06
+    image: ghcr.io/mailu/unbound:2024.06.67
     restart: always
     env_file: .env
     networks:
@@ -50,7 +37,7 @@ services:
 
   front:
     <<: *mailu
-    image: ghcr.io/mailu/nginx:2024.06
+    image: ghcr.io/mailu/nginx:2024.06.67
     ports:
       - "10.10.0.12:8180:80"   # web for NPM (WireGuard IP only)
       - "25:25"
@@ -69,12 +56,7 @@ services:
 
   admin:
     <<: *mailu
-    image: mailu-inteteam/admin:local
-    build:
-      context: core/admin
-      additional_contexts:
-        base: service:admin-base
-        assets: service:admin-assets
+    image: ghcr.io/mailu/admin:2024.06.67
     volumes:
       - /mailu/data:/data
       - /mailu/dkim:/dkim
@@ -84,7 +66,7 @@ services:
 
   imap:
     <<: *mailu
-    image: ghcr.io/mailu/dovecot:2024.06
+    image: ghcr.io/mailu/dovecot:2024.06.67
     volumes:
       - /mailu/mail:/mail
       - /mailu/overrides/dovecot:/overrides:ro
@@ -94,7 +76,7 @@ services:
 
   smtp:
     <<: *mailu
-    image: ghcr.io/mailu/postfix:2024.06
+    image: ghcr.io/mailu/postfix:2024.06.67
     volumes:
       - /mailu/mailqueue:/queue
       - /mailu/overrides/postfix:/overrides:ro
@@ -103,7 +85,7 @@ services:
       - resolver
 
   oletools:
-    image: ghcr.io/mailu/oletools:2024.06
+    image: ghcr.io/mailu/oletools:2024.06.67
     hostname: oletools
     restart: always
     networks:
@@ -111,7 +93,7 @@ services:
 
   antispam:
     <<: *mailu
-    image: ghcr.io/mailu/rspamd:2024.06
+    image: ghcr.io/mailu/rspamd:2024.06.67
     hostname: antispam
     networks:
       - default
@@ -128,7 +110,7 @@ services:
       - resolver
 
   antivirus:
-    image: clamav/clamav-debian:1.4_base
+    image: clamav/clamav-debian:stable   # as in upstream 2024.06 setup
     restart: always
     networks:
       - clamav
@@ -136,7 +118,7 @@ services:
       - /mailu/clamav:/var/lib/clamav
 
   webmail:
-    image: ghcr.io/mailu/webmail:2024.06
+    image: ghcr.io/mailu/webmail:2024.06.67
     restart: always
     env_file: .env
     volumes:
